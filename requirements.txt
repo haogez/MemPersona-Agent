@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic>=2
+neo4j
+python-dotenv
+httpx
+anyio
+tenacity
+numpy
