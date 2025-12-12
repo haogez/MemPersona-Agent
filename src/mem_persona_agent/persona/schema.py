@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -30,14 +30,14 @@ class Persona(BaseModel):
     social_pattern: str
     favorite_thing: str
     usual_place: str
-    past_experience: List[str]
+    past_experience: List[Dict[str, Any]]
     background: str
     speech_style: str
     personality: BigFive
 
     @field_validator("past_experience")
     @classmethod
-    def ensure_non_empty(cls, value: List[str]):
+    def ensure_non_empty(cls, value: List[Dict[str, Any]]):
         return value or []
 
 

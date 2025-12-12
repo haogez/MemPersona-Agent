@@ -18,7 +18,7 @@ def _get_env(name: str, default: str | None = None) -> str:
 class Settings:
     llm_api_base: str = os.getenv("LLM_API_BASE_URL", "")
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
-    llm_model_name: str = os.getenv("LLM_MODEL_NAME", "text-embedding-3-large")
+    llm_model_name: str = os.getenv("LLM_MODEL_NAME", "gpt-4.1-mini")
     embed_model_name: str = os.getenv("EMBED_MODEL_NAME", "text-embedding-3-large")
 
     neo4j_uri: str = os.getenv("NEO4J_URI", "")
@@ -27,6 +27,7 @@ class Settings:
     neo4j_db: str = os.getenv("NEO4J_DB", "neo4j")
 
     message_history: int = int(os.getenv("MESSAGE_HISTORY", "6"))
+    persona_store_path: str = os.getenv("PERSONA_STORE_PATH", "artifacts/personas.jsonl")
 
     @property
     def neo4j_available(self) -> bool:

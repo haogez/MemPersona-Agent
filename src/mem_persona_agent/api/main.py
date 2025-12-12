@@ -59,11 +59,20 @@ class ChatResponse(BaseModel):
     used_memory: List[Dict[str, Any]]
 
 
+class PersonaDeleteRequest(BaseModel):
+    character_id: str
+
+
+class PersonaListResponse(BaseModel):
+    personas: List[Dict[str, Any]]
+
+
 @app.post("/persona/generate", response_model=PersonaResponse)
 async def generate_persona(body: PersonaRequest):
     generator = PersonaGenerator()
     persona = await generator.generate(body.seed)
     character_id = str(uuid.uuid4())
+    store.write_persona(character_id, persona.model_dump())
     return PersonaResponse(character_id=character_id, persona=persona)
 
 
@@ -71,6 +80,17 @@ async def generate_persona(body: PersonaRequest):
 async def generate_memory(body: MemoryRequest):
     episodes = await writer.generate_and_store(body.character_id, body.persona.model_dump())
     return MemoryResponse(episodes=episodes)
+
+
+@app.get("/persona/list", response_model=PersonaListResponse)
+async def list_personas(limit: int = 50):
+    return PersonaListResponse(personas=store.list_personas_from_file(limit=limit))
+
+
+@app.post("/persona/delete")
+async def delete_persona(body: PersonaDeleteRequest):
+    store.delete_persona(body.character_id)
+    return {"status": "ok", "deleted": body.character_id}
 
 
 @app.post("/chat", response_model=ChatResponse)
