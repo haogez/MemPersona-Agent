@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import uuid
 from typing import Any, Dict, List, Optional
+import logging
+import json
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 
 from mem_persona_agent.agent.roleplay_agent import RoleplayAgent
@@ -12,6 +14,9 @@ from mem_persona_agent.llm import ChatClient
 from mem_persona_agent.memory import GraphStore, MemoryRetriever, MemoryWriter
 from mem_persona_agent.persona.generator import PersonaGenerator
 from mem_persona_agent.persona.schema import Persona
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", encoding="utf-8")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="MemPersona-Agent")
 
@@ -67,10 +72,22 @@ class PersonaListResponse(BaseModel):
     personas: List[Dict[str, Any]]
 
 
+@app.post("/persona/delete_all")
+async def delete_all_personas():
+    store.delete_all_personas()
+    return {"status": "ok", "deleted": "all"}
+
+
 @app.post("/persona/generate", response_model=PersonaResponse)
-async def generate_persona(body: PersonaRequest):
+async def generate_persona(request: Request):
+    raw = await request.body()
+    data, used_encoding = _decode_json_with_fallback(raw)
+    seed = data.get("seed") if isinstance(data, dict) else None
+    if not seed or not isinstance(seed, str):
+        raise HTTPException(status_code=400, detail="Invalid payload: missing seed")
+    logger.info("API receive seed repr=%r len=%s encoding=%s", seed, len(seed), used_encoding)
     generator = PersonaGenerator()
-    persona = await generator.generate(body.seed)
+    persona = await generator.generate(seed)
     character_id = str(uuid.uuid4())
     store.write_persona(character_id, persona.model_dump())
     return PersonaResponse(character_id=character_id, persona=persona)
@@ -110,3 +127,14 @@ async def chat(body: ChatRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "neo4j": store.driver is not None, "neo4j_available": settings.neo4j_available}
+
+
+def _decode_json_with_fallback(raw: bytes, encodings: tuple[str, ...] = ("utf-8", "gbk", "cp936")) -> tuple[Dict[str, Any], str]:
+    """Decode JSON body, trying UTF-8 first, then common Windows encodings to tolerate cp936 inputs."""
+    last_error: Exception | None = None
+    for enc in encodings:
+        try:
+            return json.loads(raw.decode(enc)), enc
+        except Exception as exc:  # pragma: no cover - defensive
+            last_error = exc
+    raise HTTPException(status_code=400, detail=f"Cannot decode payload; tried {encodings}; last_error={last_error}")

@@ -85,6 +85,22 @@ class GraphStore:
         with self.driver.session(database=settings.neo4j_db) as session:
             session.run(cypher, {"cid": character_id})
 
+    def delete_all_personas(self):
+        """Delete all personas and static episodes from Neo4j, cache, and file."""
+        self.persona_cache.clear()
+        self.memory_cache.clear()
+        self._reset_persona_file()
+
+        if not self.driver:
+            return
+        cypher = """
+        MATCH (c:Character)
+        OPTIONAL MATCH (c)-[:HAS_STATIC_EPISODE]->(e:StaticEpisode)
+        DETACH DELETE e, c
+        """
+        with self.driver.session(database=settings.neo4j_db) as session:
+            session.run(cypher)
+
     def write_static_episodes(self, character_id: str, episodes: List[Dict[str, Any]]):
         if not self.driver:
             self.memory_cache.setdefault(character_id, []).extend(episodes)
@@ -176,8 +192,9 @@ class GraphStore:
     def _persist_persona_file(self, character_id: str, persona: Dict[str, Any]):
         self.persona_store_path.parent.mkdir(parents=True, exist_ok=True)
         record = {"character_id": character_id, "persona": persona}
+        pretty = json.dumps(record, ensure_ascii=False, indent=2)
         with self.persona_store_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            fh.write(pretty + "\n\n")
 
     def _delete_persona_file_record(self, character_id: str):
         if not self.persona_store_path.exists():
@@ -192,3 +209,7 @@ class GraphStore:
             if obj.get("character_id") != character_id:
                 kept.append(line)
         self.persona_store_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+    def _reset_persona_file(self):
+        if self.persona_store_path.exists():
+            self.persona_store_path.write_text("", encoding="utf-8")
