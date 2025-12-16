@@ -20,6 +20,7 @@ class Settings:
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     llm_model_name: str = os.getenv("LLM_MODEL_NAME", "gpt-4.1-mini")
     embed_model_name: str = os.getenv("EMBED_MODEL_NAME", "text-embedding-3-large")
+    llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "0"))  # 0/负数表示不限时
 
     neo4j_uri: str = os.getenv("NEO4J_URI", "")
     neo4j_username: str = os.getenv("NEO4J_USERNAME", "")
@@ -28,6 +29,8 @@ class Settings:
 
     message_history: int = int(os.getenv("MESSAGE_HISTORY", "6"))
     persona_store_path: str = os.getenv("PERSONA_STORE_PATH", "artifacts/personas.jsonl")
+    related_store_path: str = os.getenv("RELATED_STORE_PATH", "artifacts/related_characters.jsonl")
+    memory_store_path: str = os.getenv("MEMORY_STORE_PATH", "artifacts/memories.jsonl")
 
     @property
     def neo4j_available(self) -> bool:

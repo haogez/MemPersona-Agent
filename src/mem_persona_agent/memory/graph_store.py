@@ -19,6 +19,8 @@ class GraphStore:
     memory_cache: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     persona_cache: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     persona_store_path: Path = field(default_factory=lambda: Path(settings.persona_store_path))
+    related_store_path: Path = field(default_factory=lambda: Path(settings.related_store_path))
+    memory_store_path: Path = field(default_factory=lambda: Path(settings.memory_store_path))
 
     def __post_init__(self):
         if settings.neo4j_available:
@@ -74,6 +76,8 @@ class GraphStore:
         self.persona_cache.pop(character_id, None)
         self.memory_cache.pop(character_id, None)
         self._delete_persona_file_record(character_id)
+        self._delete_related_file_record(character_id)
+        self._delete_memory_file_record(character_id)
 
         if not self.driver:
             return
@@ -90,6 +94,8 @@ class GraphStore:
         self.persona_cache.clear()
         self.memory_cache.clear()
         self._reset_persona_file()
+        self._reset_related_file()
+        self._reset_memory_file()
 
         if not self.driver:
             return
@@ -102,9 +108,17 @@ class GraphStore:
             session.run(cypher)
 
     def write_static_episodes(self, character_id: str, episodes: List[Dict[str, Any]]):
+        self._persist_memory_file(character_id, episodes)
         if not self.driver:
             self.memory_cache.setdefault(character_id, []).extend(episodes)
             return
+
+        cleaned: List[Dict[str, Any]] = []
+        for ep in episodes:
+            ep_copy = dict(ep)
+            for key in ["people", "objects", "places", "values", "links", "participants", "participant_roles"]:
+                ep_copy.pop(key, None)
+            cleaned.append(ep_copy)
 
         cypher = """
         UNWIND $episodes AS ep
@@ -130,7 +144,7 @@ class GraphStore:
             MERGE (e)-[:LOCATED_IN]->(plr)
         """
         with self.driver.session(database=settings.neo4j_db) as session:
-            session.run(cypher, {"cid": character_id, "episodes": episodes})
+            session.run(cypher, {"cid": character_id, "episodes": cleaned})
 
     def query_similar(self, character_id: str, query_emb: List[float], npc: str | None = None, limit: int = 8) -> List[Dict[str, Any]]:
         if not self.driver:
@@ -213,3 +227,58 @@ class GraphStore:
     def _reset_persona_file(self):
         if self.persona_store_path.exists():
             self.persona_store_path.write_text("", encoding="utf-8")
+
+    def write_related_characters(self, character_id: str, related: List[Dict[str, Any]]):
+        self.related_store_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {"character_id": character_id, "related_characters": related}
+        pretty = json.dumps(record, ensure_ascii=False, indent=2)
+        with self.related_store_path.open("a", encoding="utf-8") as fh:
+            fh.write(pretty + "\n\n")
+
+    def _delete_related_file_record(self, character_id: str):
+        if not self.related_store_path.exists():
+            return
+        lines = self.related_store_path.read_text(encoding="utf-8").splitlines()
+        kept = []
+        for line in lines:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("character_id") != character_id:
+                kept.append(line)
+        self.related_store_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+    def _reset_related_file(self):
+        if self.related_store_path.exists():
+            self.related_store_path.write_text("", encoding="utf-8")
+
+    def _persist_memory_file(self, character_id: str, episodes: List[Dict[str, Any]]):
+        self.memory_store_path.parent.mkdir(parents=True, exist_ok=True)
+        trimmed = []
+        for ep in episodes:
+            ep_copy = dict(ep)
+            ep_copy.pop("embedding", None)
+            trimmed.append(ep_copy)
+        record = {"character_id": character_id, "episodes": trimmed}
+        pretty = json.dumps(record, ensure_ascii=False, indent=2)
+        with self.memory_store_path.open("a", encoding="utf-8") as fh:
+            fh.write(pretty + "\n\n")
+
+    def _delete_memory_file_record(self, character_id: str):
+        if not self.memory_store_path.exists():
+            return
+        lines = self.memory_store_path.read_text(encoding="utf-8").splitlines()
+        kept = []
+        for line in lines:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("character_id") != character_id:
+                kept.append(line)
+        self.memory_store_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+    def _reset_memory_file(self):
+        if self.memory_store_path.exists():
+            self.memory_store_path.write_text("", encoding="utf-8")

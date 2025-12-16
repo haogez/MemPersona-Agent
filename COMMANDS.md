@@ -1,109 +1,80 @@
-# MemPersona-Agent 使用指令速查
+# MemPersona-Agent 指令速查（UTF-8 发送）
 
 ## 0. 前置
-- 启动服务：`uvicorn mem_persona_agent.api.main:app --host 127.0.0.1 --port 8000`
-- 确保 `.env` 配好 LLM/Neo4j，默认模型：`gpt-4.1-mini`。
-- PowerShell 避免乱码：`[Console]::InputEncoding=[System.Text.Encoding]::UTF8; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8`，发送 JSON 时用 UTF-8 bytes。
+- 启动：`uvicorn mem_persona_agent.api.main:app --host 127.0.0.1 --port 8000`
+- `.env` 配好 LLM/Neo4j，`LLM_TIMEOUT_SECONDS=0` 表示不限时。
+- PowerShell 编码：`[Console]::InputEncoding=[System.Text.Encoding]::UTF8; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8`
+- 发送 JSON 用 UTF-8 bytes；curl 用 `--data-binary`。
 
-## 1) 生成角色（返回 character_id + persona，并写入 Neo4j 与 artifacts/personas.jsonl）
-PowerShell（UTF-8 bytes）:
+## 1) 生成角色（写入 Neo4j + artifacts/personas.jsonl）
+PowerShell：
 ```powershell
-$json = '{"seed":"一个表面阳光但内心黑暗的女高中生，叫周静宜，17岁"}'
+$json = '{"seed":"一个表面阳光但内心阴暗的女高中生，叫周静宜，17岁"}'
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/persona/generate" `
-  -Method POST `
-  -ContentType "application/json; charset=utf-8" `
-  -Body $bytes
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/persona/generate" -Method POST `
+  -ContentType "application/json; charset=utf-8" -Body $bytes
 ```
-Bash:
+curl：
 ```bash
 curl -s -X POST http://127.0.0.1:8000/persona/generate \
   -H "Content-Type: application/json" \
-  --data-binary '{"seed":"一个表面阳光但内心黑暗的女高中生，叫周静宜，17岁"}'
+  --data-binary '{"seed":"一个表面阳光但内心阴暗的女高中生，叫周静宜，17岁"}'
 ```
 
-## 2) 列出已生成角色（本地 JSONL）
-PowerShell:
-```powershell
-Invoke-WebRequest -Uri "http://127.0.0.1:8000/persona/list?limit=20" -Method GET |
-Select-Object -ExpandProperty Content
-```
-Bash: `curl -s "http://127.0.0.1:8000/persona/list?limit=20"`
+## 2) 列出角色（本地 JSONL）
+PowerShell：`Invoke-WebRequest -Uri "http://127.0.0.1:8000/persona/list?limit=20" -Method GET | Select-Object -ExpandProperty Content`
+curl：`curl -s "http://127.0.0.1:8000/persona/list?limit=20"`
 
-## 3) 删除单个角色（本地 JSONL + Neo4j 及静态记忆）
-PowerShell（UTF-8 bytes）:
+## 3) 删除角色 / 删除全部 / 重置
+- 单个（PowerShell UTF-8 bytes）：
 ```powershell
-$json = '{"character_id":"<要删除的ID>"}'
+$json = '{"character_id":"<ID>"}'
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/persona/delete" `
-  -Method POST -ContentType "application/json; charset=utf-8" `
-  -Body $bytes
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/persona/delete" -Method POST `
+  -ContentType "application/json; charset=utf-8" -Body $bytes
 ```
-Bash:
-```bash
-curl -s -X POST http://127.0.0.1:8000/persona/delete \
-  -H "Content-Type: application/json" \
-  --data-binary '{"character_id":"<要删除的ID>"}'
-```
+- 删除全部：`Invoke-WebRequest -Uri "http://127.0.0.1:8000/persona/delete_all" -Method POST | Select-Object -ExpandProperty Content`
+- 重置全部（角色+记忆+关联文件）：`Invoke-WebRequest -Uri "http://127.0.0.1:8000/reset/all" -Method POST | Select-Object -ExpandProperty Content`
 
-## 3b) 删除所有角色（清空 JSONL、缓存、Neo4j 角色及静态记忆）
-PowerShell:
+## 4) 生成静态记忆（写入 Neo4j + artifacts/memories.jsonl + related_characters.jsonl）
+需要 persona、character_id，可带 seed：
 ```powershell
-Invoke-WebRequest -Uri "http://127.0.0.1:8000/persona/delete_all" -Method POST |
-Select-Object -ExpandProperty Content
-```
-Bash: `curl -s -X POST http://127.0.0.1:8000/persona/delete_all`
-
-## 4) 生成静态记忆并写入 Neo4j
-（需使用步骤 1 返回的 persona 对象与同一个 character_id）
-PowerShell（UTF-8 bytes）:
-```powershell
-$json = '{"character_id":"<cid>","persona":<persona对象>}' 
+$json = '{"character_id":"<cid>","persona":<persona对象>,"seed":"<seed>"}'
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/memory/static/generate" `
-  -Method POST -ContentType "application/json; charset=utf-8" `
-  -Body $bytes
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/memory/static/generate" -Method POST `
+  -ContentType "application/json; charset=utf-8" -Body $bytes
 ```
-Bash:
+curl：
 ```bash
 curl -s -X POST http://127.0.0.1:8000/memory/static/generate \
   -H "Content-Type: application/json" \
-  --data-binary '{"character_id":"<cid>","persona":<persona对象>}'
+  --data-binary '{"character_id":"<cid>","persona":<persona对象>,"seed":"<seed>"}'
 ```
 
-## 5) 带人设 + 记忆检索的对话
-PowerShell（UTF-8 bytes）:
+## 5) 对话（带记忆检索）
 ```powershell
 $json = '{"character_id":"<cid>","persona":<persona对象>,"place":"咖啡店","npc":"妈妈","mode":"static_only","dialogue_history":[],"user_input":"你为什么喜欢咖啡？"}'
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/chat" `
-  -Method POST -ContentType "application/json; charset=utf-8" `
-  -Body $bytes
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/chat" -Method POST `
+  -ContentType "application/json; charset=utf-8" -Body $bytes
 ```
-Bash:
+curl 同上，替换为 `--data-binary`。
+
+## 6) 脚本一键生成（角色+静态记忆）
+本地已启动 API 后：
 ```bash
-curl -s -X POST http://127.0.0.1:8000/chat \
-  -H "Content-Type: application/json" \
-  --data-binary '{"character_id":"<cid>","persona":<persona对象>,"place":"咖啡店","npc":"妈妈","mode":"static_only","dialogue_history":[],"user_input":"你为什么喜欢咖啡？"}'
+python scripts/generate_with_memory.py "你的seed" --base-url http://127.0.0.1:8000
 ```
 
-## 6) 一行跑全流程（生成人设+记忆+对话，落盘 JSON）
-Python 同步示例（适合脚本批量）：
+## 7) 一行跑全流程（代码）
 ```python
 from mem_persona_agent.flow import run_full_pipeline_sync
-
-res = run_full_pipeline_sync(
-    seed="爱街舞的深圳高中女生",
-    user_input="你为什么喜欢咖啡？",
-    place="咖啡店",
-    npc="妈妈",
-    timeline_mode="strict",
-    save_dir="artifacts"
-)
-print(res["paths"])  # persona/episodes/chat JSON 路径
+res = run_full_pipeline_sync(seed="爱街舞的深圳高中女生", user_input="你为什么喜欢咖啡？", place="咖啡店", npc="妈妈")
+print(res["paths"])  # persona/episodes/chat 路径
 ```
 
-## 7) 查看/管理本地角色文件
-- 路径：`artifacts/personas.jsonl`
-- 查看：`Get-Content artifacts/personas.jsonl -Encoding utf8` 或用支持 UTF-8 的编辑器打开。
-- 该文件每条记录 `{character_id, persona}`，可替换为大规模细粒度人设数据集做测试。
+## 8) 本地文件
+- 人设：`artifacts/personas.jsonl`
+- 关联角色：`artifacts/related_characters.jsonl`
+- 记忆：`artifacts/memories.jsonl`
+- 查看：`Get-Content <file> -Encoding utf8`

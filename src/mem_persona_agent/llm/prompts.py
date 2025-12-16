@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import textwrap
+import json
 from typing import Any, Dict, List
 
 
@@ -133,3 +134,93 @@ def build_episode_prompt(persona: Dict[str, Any]) -> List[Dict[str, str]]:
         """
     ).strip()
     return [{"role": "system", "content": system}]
+
+
+def build_related_characters_prompt(seed: str, persona: Dict[str, Any]) -> List[Dict[str, str]]:
+    """生成关联角色列表。"""
+    system = textwrap.dedent(
+        """
+        你是“关联角色推断助手”，根据用户 seed 与完整 persona 推断主角的重要关联角色。
+        输出格式：严格 JSON，对应字段：related_characters: [{ "name": "人名", "relation": "关系", "attitude": "主角对TA的态度" }]
+        规则：
+        - seed 中明确提到的人名/关系必须包含，name 必须是人名，不要写“妈妈/同学”这类泛称；
+        - 从 persona 的 family_status、past_experience、background 推断关键人物；不写路人；
+        - 至少 3 人，至多 8 人；
+        - 只输出 JSON，不要额外说明。
+        """
+    ).strip()
+    user = f"seed: {seed}\npersona: {json.dumps(persona, ensure_ascii=False)}"
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_memory_prompt(character_id: str, persona: Dict[str, Any], related: List[Dict[str, str]], memory_config: Dict[str, Any]) -> List[Dict[str, str]]:
+    """构造静态记忆生成提示，使用严格结构化输出。"""
+    related_names = [rc.get("name") for rc in related if rc.get("name")]
+    system = textwrap.dedent(
+        """
+        你是一个“静态记忆生成器（Static Memory Generator）”。你的任务是：基于输入的 20 维角色档案 persona（JSON），生成一组可用于 Neo4j 图数据库存储与后续向量检索的“静态人生记忆（Static Memories）”。这些记忆将作为角色在对话时的长期背景记忆，被向量检索召回并注入回复中。
+
+        【硬性目标】
+        记忆必须“可检索”：每条记忆都必须包含可读的 summary_text（用于 embedding）与结构化字段（用于过滤/排序），并提供原始对话 dialogue_text（用于证据注入与语气还原）。
+        记忆必须“时序自洽”：时间线不能矛盾，事件之间要有前因后果，塑造角色现在的性格/价值观/语言风格。
+        记忆必须“高效率生成”：总条数严格控制，避免生成过长的传记；每条记忆简洁但信息密度高。
+        记忆必须“与 persona 强绑定”：参与者、地点、动机、冲突、结论要符合 persona 中的背景、家庭、教育、价值观与 personality 五维。
+
+        【输出要求】
+        - 必须只输出一个合法 JSON 对象，不要输出任何解释、不要 Markdown。
+        - 顶层字段必须仅包含：character_id, episodes, memory_summary；episodes 必须存在且为数组。
+        - episodes 数量必须等于 memory_config.total_events，且每条事件字段必须与规范完全一致，不要改名或新增字段。
+        - 严禁输出 static_memories、memories 等其他字段名称，必须使用 episodes。
+        - dialogue_text 必须是至少 5 轮对话（使用“：”或换行标明轮次），不可省略。
+        - participants 必须包含主角姓名和相关人物；related_characters 中出现的名字至少要覆盖 3 人。
+        """
+    ).strip()
+    user = json.dumps(
+        {
+            "character_id": character_id,
+            "persona": persona,
+            "related_characters": related,
+            "must_include_related_names": related_names,
+            "memory_config": memory_config,
+            "instructions": "严格按 specification 输出 episodes，总数等于 memory_config.total_events。",
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_memory_supervision_prompt(
+    character_id: str,
+    persona: Dict[str, Any],
+    related: List[Dict[str, str]],
+    memory_config: Dict[str, Any],
+    previous_output: Dict[str, Any],
+    feedback: str,
+) -> List[Dict[str, str]]:
+    """监督 Agent：根据反馈对记忆进行一次修正。"""
+    system = textwrap.dedent(
+        """
+        你是“记忆质量监督与重写代理”。任务：根据反馈修正静态记忆，确保字段与 episodes 规范完全一致。
+        - 仅输出一个 JSON 对象：{character_id, episodes, memory_summary}
+        - episodes 数量必须等于 memory_config.total_events
+        - 必须使用字段名 episodes，不可用其他名称
+        - dialogue_text 至少 5 轮对话（用“：”或换行区分轮次）
+        - participants 必须包含主角和相关人物，related_characters 中的名字至少 3 人出现在多条事件中
+        - 不能新增未定义字段，不能缺字段
+        - 充分利用 persona 的 past_experience/background 细节，事件有因果和情绪演进
+        """
+    ).strip()
+    user = json.dumps(
+        {
+            "character_id": character_id,
+            "persona": persona,
+            "related_characters": related,
+            "memory_config": memory_config,
+            "previous_output": previous_output,
+            "feedback": feedback,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]

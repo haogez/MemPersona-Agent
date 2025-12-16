@@ -40,7 +40,8 @@ class ChatClient:
             retry=retry_if_exception_type(httpx.HTTPError),
         ):
             with attempt:
-                async with httpx.AsyncClient(base_url=settings.llm_api_base, timeout=30.0) as client:
+                timeout = None if settings.llm_timeout_seconds <= 0 else settings.llm_timeout_seconds
+                async with httpx.AsyncClient(base_url=settings.llm_api_base, timeout=timeout) as client:
                     response = await client.post("/chat/completions", headers=headers, json=payload)
                     response.raise_for_status()
                     data = response.json()

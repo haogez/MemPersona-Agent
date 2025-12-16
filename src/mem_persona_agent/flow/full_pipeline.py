@@ -39,7 +39,7 @@ async def run_full_pipeline(
     store.write_persona(character_id, persona_dict)
 
     writer = MemoryWriter(store, client=client)
-    episodes = await writer.generate_and_store(character_id, persona_dict)
+    episodes = await writer.generate_and_store(character_id, persona_dict, seed=seed)
 
     retriever = MemoryRetriever(store)
     agent = RoleplayAgent(persona, character_id, retriever, client=client)

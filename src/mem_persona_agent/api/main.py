@@ -38,6 +38,7 @@ class PersonaResponse(BaseModel):
 class MemoryRequest(BaseModel):
     character_id: str
     persona: Persona
+    seed: Optional[str] = None
 
 
 class MemoryResponse(BaseModel):
@@ -78,6 +79,12 @@ async def delete_all_personas():
     return {"status": "ok", "deleted": "all"}
 
 
+@app.post("/reset/all")
+async def reset_all():
+    store.delete_all_personas()
+    return {"status": "ok", "reset": "all personas + memories + related"}
+
+
 @app.post("/persona/generate", response_model=PersonaResponse)
 async def generate_persona(request: Request):
     raw = await request.body()
@@ -95,7 +102,8 @@ async def generate_persona(request: Request):
 
 @app.post("/memory/static/generate", response_model=MemoryResponse)
 async def generate_memory(body: MemoryRequest):
-    episodes = await writer.generate_and_store(body.character_id, body.persona.model_dump())
+    logger.info("API /memory/static/generate cid=%s seed=%s", body.character_id, body.seed)
+    episodes = await writer.generate_and_store(body.character_id, body.persona.model_dump(), seed=body.seed or "")
     return MemoryResponse(episodes=episodes)
 
 
