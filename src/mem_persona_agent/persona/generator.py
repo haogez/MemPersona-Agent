@@ -6,6 +6,7 @@ import re
 from typing import Any, Dict, Optional
 
 from mem_persona_agent.llm import ChatClient, build_persona_prompt
+from mem_persona_agent.config import settings
 from mem_persona_agent.persona.schema import Persona
 
 logger = logging.getLogger(__name__)
@@ -45,43 +46,43 @@ class PersonaGenerator:
 
     def _parse_seed(self, seed: str) -> Dict[str, Any]:
         """Extract name/age/gender hints from seed to hard-enforce critical fields."""
-        name: Optional[str] = None
-        age: Optional[int] = None
-        gender: Optional[str] = None
-
-        m_age = re.search(r"(\d{1,3})\s*岁", seed)
-        if m_age:
-            try:
-                age = int(m_age.group(1))
-            except ValueError:
-                age = None
-
-        if re.search(r"女", seed):
-            gender = "女"
-        elif re.search(r"男", seed):
-            gender = "男"
-
-        m_name = re.search(r"(叫|名叫|名字叫|名为)([\w\u4e00-\u9fa5]{2,8})", seed)
-        if m_name:
-            name = m_name.group(2)
-        else:
-            m_en = re.search(r"[A-Za-z]{2,}", seed)
-            if m_en:
-                name = m_en.group(0)
-
+        if not settings.enable_seed_overrides:
+            return {}
         overrides: Dict[str, Any] = {}
-        if name:
-            overrides["name"] = name
-        if age is not None:
-            overrides["age"] = age
-        if gender:
-            overrides["gender"] = gender
+        for raw_line in seed.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            m_name = re.match(r"^(?:姓名|名字)\s*[:：]\s*([\u4e00-\u9fff]{2,8}(?:·[\u4e00-\u9fff]{1,8})?)", line)
+            if m_name and "name" not in overrides:
+                overrides["name"] = m_name.group(1)
+                continue
+            m_gender = re.match(r"^性别\s*[:：]\s*(男|女)", line)
+            if m_gender and "gender" not in overrides:
+                overrides["gender"] = m_gender.group(1)
+                continue
+            m_age = re.match(r"^年龄\s*[:：]\s*(\d{1,3})", line)
+            if m_age and "age" not in overrides:
+                try:
+                    overrides["age"] = int(m_age.group(1))
+                except ValueError:
+                    continue
         return overrides
 
     def _ensure_fields(self, data: Dict[str, Any], seed: str, overrides: Dict[str, Any]) -> Dict[str, Any]:
         """Fill missing fields, enforce personality/past_experience defaults, and override critical fields with seed hints."""
+        fallback_name = "未知"
+        for raw_line in seed.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if re.match(r"^(姓名|名字|性别|年龄)\s*[:：]", line):
+                continue
+            if re.fullmatch(r"[\u4e00-\u9fff]{2,12}", line):
+                fallback_name = line
+            break
         defaults: Dict[str, Any] = {
-            "name": seed,
+            "name": fallback_name,
             "age": 25,
             "gender": "未知",
             "occupation": "未知",

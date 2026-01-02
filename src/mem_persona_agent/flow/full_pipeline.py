@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -25,8 +25,8 @@ async def run_full_pipeline(
     store: Optional[GraphStore] = None,
 ) -> Dict[str, Any]:
     """
-    一句话执行：角色生成 -> 记忆生成存储 -> 对话，且落盘 JSON。
-    返回 persona、episodes、reply、used_memory 以及保存路径。
+    One-shot pipeline: persona -> scene memory generation -> dialogue.
+    Returns persona, scenes, reply, used_memory and saved paths.
     """
     store = store or GraphStore()
     store.ensure_schema()
@@ -39,18 +39,19 @@ async def run_full_pipeline(
     store.write_persona(character_id, persona_dict)
 
     writer = MemoryWriter(store, client=client)
-    episodes = await writer.generate_and_store(character_id, persona_dict, seed=seed)
+    memory_bundle = await writer.generate_and_store(character_id, persona_dict, seed=seed)
 
     retriever = MemoryRetriever(store)
     agent = RoleplayAgent(persona, character_id, retriever, client=client)
     reply, used_memory = await agent.chat(user_input, place=place, npc=npc)
 
-    paths = _save_artifacts(save_dir, character_id, persona_dict, episodes, used_memory, reply, user_input)
+    paths = _save_artifacts(save_dir, character_id, persona_dict, memory_bundle, used_memory, reply, user_input)
 
     return {
         "character_id": character_id,
         "persona": persona_dict,
-        "episodes": episodes,
+        "sequence": memory_bundle.get("sequence", []),
+        "scenes": memory_bundle.get("scenes", []),
         "reply": reply,
         "used_memory": used_memory,
         "paths": paths,
@@ -58,7 +59,7 @@ async def run_full_pipeline(
 
 
 def run_full_pipeline_sync(**kwargs) -> Dict[str, Any]:
-    """同步便捷封装，方便脚本批量调用。"""
+    """Sync helper."""
     return asyncio.run(run_full_pipeline(**kwargs))
 
 
@@ -66,8 +67,8 @@ def _save_artifacts(
     base_dir: str | Path,
     cid: str,
     persona: Dict[str, Any],
-    episodes: list[Dict[str, Any]],
-    memory: list[Dict[str, Any]],
+    memory_bundle: Dict[str, Any],
+    used_memory: Dict[str, Any],
     reply: str,
     user_input: str,
 ) -> Dict[str, str]:
@@ -75,14 +76,23 @@ def _save_artifacts(
     base.mkdir(parents=True, exist_ok=True)
 
     persona_path = base / "persona.json"
-    episodes_path = base / "episodes.json"
+    sequence_path = base / "scene_sequence.json"
+    scenes_path = base / "scenes.json"
     chat_path = base / "chat_sample.json"
 
-    persona_path.write_text(json.dumps(persona, ensure_ascii=False, indent=2), encoding="utf-8")
-    episodes_path.write_text(json.dumps(episodes, ensure_ascii=False, indent=2), encoding="utf-8")
-    chat_path.write_text(
-        json.dumps({"user_input": user_input, "reply": reply, "used_memory": memory}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with persona_path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(persona, ensure_ascii=False, indent=2))
+    with sequence_path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(memory_bundle.get("sequence", []), ensure_ascii=False, indent=2))
+    with scenes_path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(memory_bundle.get("scenes", []), ensure_ascii=False, indent=2))
+    with chat_path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"user_input": user_input, "reply": reply, "used_memory": used_memory}, ensure_ascii=False, indent=2))
 
-    return {"persona": str(persona_path), "episodes": str(episodes_path), "chat": str(chat_path)}
+    return {
+        "persona": str(persona_path),
+        "sequence": str(sequence_path),
+        "scenes": str(scenes_path),
+        "chat": str(chat_path),
+    }
+

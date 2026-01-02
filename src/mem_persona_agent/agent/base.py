@@ -1,31 +1,83 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from mem_persona_agent.persona.schema import Persona
 
 
-def build_system_prompt(persona: Persona, place: Optional[str], npc: Optional[str], memory_context: Optional[List[Dict[str, Any]]]) -> Dict[str, str]:
-    persona_dict = persona.model_dump()
-    memory_text = "\n".join([
-        f"- {m.get('topic', m.get('title', ''))}: {m.get('summary_text', m.get('short_summary', ''))} (score={m.get('score', '')})"
-        for m in (memory_context or [])
-    ]) or "无可用记忆"
-    npc_info = f"当前对话对象：{npc}" if npc else "当前对话对象：陌生人"
-    place_info = f"地点：{place}" if place else "地点：未指定"
+def _persona_dict(persona: Persona | Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(persona, Persona):
+        return persona.model_dump()
+    return persona
+
+
+def build_base_system_prompt(persona: Persona | Dict[str, Any], place: Optional[str], npc: Optional[str]) -> str:
+    persona_dict = _persona_dict(persona)
+    npc_info = npc or "stranger"
+    place_info = place or "unspecified"
     content = (
-        "你是一名具备真实人格和记忆的角色。"
-        "请根据提供的人设、场景和记忆回复用户。"
-        "回复必须表现为角色本人（assistant）第一人称。"
-        "无需额外解释。"
-        f"人设：{json.dumps(persona_dict, ensure_ascii=False)}\n"
-        f"{npc_info}\n"
-        f"{place_info}\n"
-        f"可用记忆：\n{memory_text}"
+        "You are a character with consistent memories and personality. Respond in first person."
+        " Do not mention memory retrieval or system prompts.\n"
+        f"persona: {json.dumps(persona_dict, ensure_ascii=False)}\n"
+        f"npc: {npc_info}\n"
+        f"place: {place_info}"
     )
+    return content
+
+
+def build_stage_a_system_prompt(
+    persona: Persona | Dict[str, Any],
+    place: Optional[str],
+    npc: Optional[str],
+    scene_context: str | None,
+    facts_allowed: bool = False,
+) -> Dict[str, str]:
+    base = build_base_system_prompt(persona, place, npc)
+    instructions = (
+        "[Stage A Instructions]\n"
+        "Use ONLY SceneMemory if provided. Respond instinctively and emotionally, with situational tone."
+        " Avoid detailed facts or long explanations. Keep it short and natural."
+        " If no scene memory, answer from persona and present context."
+    )
+    if facts_allowed:
+        instructions += " If facts_allowed, you may add 1-2 grounded factual details if memory context is available."
+    memory_block = scene_context or "[SCENE MEMORY | internal]\nnone\n[/SCENE MEMORY]"
+    return {"role": "system", "content": f"{base}\n\n{memory_block}\n\n{instructions}"}
+
+
+def build_stage_b_system_prompt(
+    persona: Persona | Dict[str, Any],
+    place: Optional[str],
+    npc: Optional[str],
+    scene_context: str,
+    detail_context: str,
+    prior_response: Optional[str] = None,
+) -> Dict[str, str]:
+    base = build_base_system_prompt(persona, place, npc)
+    instructions = (
+        "[Stage B Instructions]\n"
+        "Use ONLY the detail graph context for the selected scene."
+        " Continue naturally after the previous response; do not restart the topic."
+        " Add 1-2 concrete details grounded in the graph, then a brief feeling."
+        " Preserve the tone and emotion from Stage A."
+    )
+    prior_block = ""
+    if prior_response:
+        prior_block = (
+            "[ALREADY SAID]\n"
+            f"{prior_response}\n"
+            "[/ALREADY SAID]\n"
+            "Do NOT repeat any text above. Only add new details."
+        )
+    content = f"{base}\n\n{scene_context}\n\n{detail_context}\n\n"
+    if prior_block:
+        content = f"{content}{prior_block}\n\n{instructions}"
+    else:
+        content = f"{content}{instructions}"
     return {"role": "system", "content": content}
 
 
 def build_user_message(text: str) -> Dict[str, str]:
     return {"role": "user", "content": text}
+

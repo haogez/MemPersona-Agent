@@ -22,9 +22,12 @@ def main():
         sys.stderr.write(f"Persona generation failed: {persona_resp}\n")
         sys.exit(1)
 
-    memory_resp = _post(f"{base}/memory/static/generate", {"character_id": character_id, "persona": persona, "seed": args.seed})
+    memory_resp = _post(
+        f"{base}/memory/static/generate",
+        {"character_id": character_id, "persona": persona, "seed": args.seed},
+    )
 
-    print(json.dumps({"character_id": character_id, "persona": persona, "memories": memory_resp}, ensure_ascii=False, indent=2))
+    print(json.dumps({"character_id": character_id, "persona": persona, "memory": memory_resp}, ensure_ascii=False, indent=2))
 
 
 def _post(url: str, payload: dict) -> dict:

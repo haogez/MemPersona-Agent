@@ -117,110 +117,194 @@ def build_persona_prompt(description: str, timeline_mode: str = "strict") -> Lis
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
 
-def build_episode_prompt(persona: Dict[str, Any]) -> List[Dict[str, str]]:
-    persona_desc = "\n".join([f"{k}: {v}" for k, v in persona.items() if k != "personality"])
-    personality = persona.get("personality", {})
-    personality_desc = ", ".join([f"{k}={v}" for k, v in personality.items()])
+def build_related_characters_stage1_prompt(
+    seed: str,
+    persona: Dict[str, Any],
+    known_names: List[str],
+    target_min: int,
+    target_max: int,
+    *,
+    feedback: str = "",
+) -> List[Dict[str, str]]:
+    """Stage-1: 生成 name + relation（可选 description）。"""
     system = textwrap.dedent(
         f"""
-        你是一名传记作家，根据以下角色人设生成 3-5 条静态人生记忆 Episode。要求：
-        - 年龄递增排序
-        - narrative 采用第一人称叙述，100-300 字
-        - 所有字段使用中文
-        - 输出严格的 JSON，结构见 Episode 规范
-        角色人设：
-        {persona_desc}
-        性格分布：{personality_desc}
-        """
-    ).strip()
-    return [{"role": "system", "content": system}]
+        你是“关联角色推断助手（Stage-1）”，生成关联角色列表。
+        必须只输出严格 JSON，结构为：{{"related_characters":[{{"name":"...","relation":"...","description":"..."}}]}}。
 
-
-def build_related_characters_prompt(seed: str, persona: Dict[str, Any]) -> List[Dict[str, str]]:
-    """生成关联角色列表。"""
-    system = textwrap.dedent(
-        """
-        你是“关联角色推断助手”，根据用户 seed 与完整 persona 推断主角的重要关联角色。
-        输出格式：严格 JSON，对应字段：related_characters: [{ "name": "人名", "relation": "关系", "attitude": "主角对TA的态度" }]
         规则：
-        - seed 中明确提到的人名/关系必须包含，name 必须是人名，不要写“妈妈/同学”这类泛称；
-        - 从 persona 的 family_status、past_experience、background 推断关键人物；不写路人；
-        - 至少 3 人，至多 8 人；
-        - 只输出 JSON，不要额外说明。
+        - name 只能是中文人名或中文音译名（2-6 汉字，可含一个“·”），禁止任何关系、身份、称谓、描述
+        - relation 只描述该角色与主角的关系或身份（父亲/同学/对手/导师/朋友/敌人/盟友等）
+        - description 可选，用一句中文补充该角色特点
+        - 生成顺序：先想 name，再填写 relation，不要在 name 中体现 relation
+        - 必须包含 known_names 中的所有名字，且字符完全一致，不得改字
+        - 角色数量在 {target_min}-{target_max} 之间
+        - 需覆盖：家庭 / 学校 / 同伴亲密 / 兴趣或社团 / 关键事件相关人物 / 支持系统
+        - 必须根据 persona 生成，避免模板化；不同 persona 之间不得输出相同的角色集合
+        - 只输出 JSON，不要解释或 Markdown
+
+        禁止示例：
+        {{"name": "父亲", "relation": "父亲"}}
+        {{"name": "主角的母亲", "relation": "母亲"}}
+
+        正确示例：
+        {{"name": "周志远", "relation": "父亲"}}
+        {{"name": "林婉清", "relation": "班主任"}}
         """
     ).strip()
-    user = f"seed: {seed}\npersona: {json.dumps(persona, ensure_ascii=False)}"
+    if feedback:
+        system += f"\n校验反馈（需修正）：{feedback}"
+    user = json.dumps({"seed": seed, "persona": persona, "known_names": known_names}, ensure_ascii=False, indent=2)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def build_memory_prompt(character_id: str, persona: Dict[str, Any], related: List[Dict[str, str]], memory_config: Dict[str, Any]) -> List[Dict[str, str]]:
-    """构造静态记忆生成提示，使用严格结构化输出。"""
-    related_names = [rc.get("name") for rc in related if rc.get("name")]
+def build_worldrule_prompt(persona: Dict[str, Any], related_characters: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     system = textwrap.dedent(
         """
-        你是一个“静态记忆生成器（Static Memory Generator）”。你的任务是：基于输入的 20 维角色档案 persona（JSON），生成一组可用于 Neo4j 图数据库存储与后续向量检索的“静态人生记忆（Static Memories）”。这些记忆将作为角色在对话时的长期背景记忆，被向量检索召回并注入回复中。
-
-        【硬性目标】
-        记忆必须“可检索”：每条记忆都必须包含可读的 summary_text（用于 embedding）与结构化字段（用于过滤/排序），并提供原始对话 dialogue_text（用于证据注入与语气还原）。
-        记忆必须“时序自洽”：时间线不能矛盾，事件之间要有前因后果，塑造角色现在的性格/价值观/语言风格。
-        记忆必须“高效率生成”：总条数严格控制，避免生成过长的传记；每条记忆简洁但信息密度高。
-        记忆必须“与 persona 强绑定”：参与者、地点、动机、冲突、结论要符合 persona 中的背景、家庭、教育、价值观与 personality 五维。
-
-        【输出要求】
-        - 必须只输出一个合法 JSON 对象，不要输出任何解释、不要 Markdown。
-        - 顶层字段必须仅包含：character_id, episodes, memory_summary；episodes 必须存在且为数组。
-        - episodes 数量必须等于 memory_config.total_events，且每条事件字段必须与规范完全一致，不要改名或新增字段。
-        - 严禁输出 static_memories、memories 等其他字段名称，必须使用 episodes。
-        - dialogue_text 必须是至少 5 轮对话（使用“：”或换行标明轮次），不可省略。
-        - participants 必须包含主角姓名和相关人物；related_characters 中出现的名字至少要覆盖 3 人。
+        只输出严格 JSON，不要解释、不要 Markdown。
+        输出结构：
+        {
+          "era_state": "...",
+          "society_state": "...",
+          "basic_rules": ["..."],
+          "geo_scope": "...",
+          "tech_level": "..."
+        }
+        要求：
+        - basic_rules 3-8 条，短句即可
+        - 全部中文
         """
     ).strip()
-    user = json.dumps(
-        {
-            "character_id": character_id,
-            "persona": persona,
-            "related_characters": related,
-            "must_include_related_names": related_names,
-            "memory_config": memory_config,
-            "instructions": "严格按 specification 输出 episodes，总数等于 memory_config.total_events。",
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
+    user = json.dumps({"persona": persona, "related_characters": related_characters}, ensure_ascii=False)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def build_memory_supervision_prompt(
-    character_id: str,
+def build_inspiration_prompt(
     persona: Dict[str, Any],
-    related: List[Dict[str, str]],
-    memory_config: Dict[str, Any],
-    previous_output: Dict[str, Any],
-    feedback: str,
+    related_characters: List[Dict[str, Any]],
+    worldrule: Dict[str, Any],
 ) -> List[Dict[str, str]]:
-    """监督 Agent：根据反馈对记忆进行一次修正。"""
     system = textwrap.dedent(
         """
-        你是“记忆质量监督与重写代理”。任务：根据反馈修正静态记忆，确保字段与 episodes 规范完全一致。
-        - 仅输出一个 JSON 对象：{character_id, episodes, memory_summary}
-        - episodes 数量必须等于 memory_config.total_events
-        - 必须使用字段名 episodes，不可用其他名称
-        - dialogue_text 至少 5 轮对话（用“：”或换行区分轮次）
-        - participants 必须包含主角和相关人物，related_characters 中的名字至少 3 人出现在多条事件中
-        - 不能新增未定义字段，不能缺字段
-        - 充分利用 persona 的 past_experience/background 细节，事件有因果和情绪演进
+        只输出严格 JSON，不要解释、不要 Markdown。
+        输出结构：
+        {
+          "concept_pool": {
+            "places": ["..."],
+            "orgs": ["..."],
+            "events": ["..."],
+            "social_facts": ["..."]
+          },
+          "visual_fragments": [
+            {"vf_id":"VF1","text":"...","tags":["..."]},
+            {"vf_id":"VF2","text":"...","tags":["..."]}
+          ]
+        }
+        要求：
+        - concept_pool 每类 3-8 条短词/短语
+        - visual_fragments 是“画面碎片”，每条 1-2 句中文，带 2-5 个 tags
+        """
+    ).strip()
+    user = json.dumps(
+        {"persona": persona, "related_characters": related_characters, "worldrule": worldrule},
+        ensure_ascii=False,
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_scene_pack_prompt(
+    persona: Dict[str, Any],
+    related_characters: List[Dict[str, Any]],
+    worldrule: Dict[str, Any],
+    inspiration: Dict[str, Any],
+    *,
+    scene_count: int = 6,
+) -> List[Dict[str, str]]:
+    system = textwrap.dedent(
+        f"""
+        只输出严格 JSON，不要解释、不要 Markdown。
+        输出结构：
+        {{
+          "scenes": [
+            {{
+              "scene_id": "...",
+              "summary_7whr": "...",
+              "who": ["..."],
+              "when": {{"time_point":"...","time_hint":"..."}},
+              "where": {{"name":"...","type":"..."}},
+              "keywords": ["..."],
+              "anchors": ["..."],
+              "salience": {{"importance": 1-10, "emotional_intensity": 1-10}}
+            }}
+          ]
+        }}
+        要求：
+        - 必须输出 {scene_count} 条 scenes
+        - summary_7whr 必须包含 Who/When/Where/What/Why/How/Result 七要素
+        - who 只能使用 persona.name 或 related_characters 中的名字
+        - 优先使用 persona.past_experience 与 persona.background 中的线索生成场景
+        - 若信息不足，再使用 worldrule/inspiration 补足
         """
     ).strip()
     user = json.dumps(
         {
-            "character_id": character_id,
             "persona": persona,
-            "related_characters": related,
-            "memory_config": memory_config,
-            "previous_output": previous_output,
-            "feedback": feedback,
+            "related_characters": related_characters,
+            "worldrule": worldrule,
+            "inspiration": inspiration,
         },
         ensure_ascii=False,
-        indent=2,
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_detail_pack_prompt(
+    scene: Dict[str, Any],
+    persona: Dict[str, Any],
+    related_characters: List[Dict[str, Any]],
+    worldrule: Dict[str, Any],
+    inspiration: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    system = textwrap.dedent(
+        """
+        只输出严格 JSON，不要解释、不要 Markdown。
+        输出结构：
+        {
+          "events": [
+            {
+              "event_id": "...",
+              "order": 1,
+              "phase": "cause|process|result",
+              "event_text": "...",
+              "time_point": "...",
+              "place": {"name":"...","type":"..."},
+              "participants": ["..."],
+              "objects": ["..."],
+              "dialogue": [
+                {"utt_id":"...","order":1,"speaker":"...","text":"..."}
+              ]
+            }
+          ],
+          "causal_edges": [
+            {"from":"event_id","to":"event_id","type":"CAUSES"}
+          ]
+        }
+        要求：
+        - events 至少 3 条，dialogue 每个 event 至少 3 轮
+        - participants 只能使用 persona.name 或 related_characters 中的名字
+        - event_text 用中文短句，按 scene.summary_7whr 展开
+        """
+    ).strip()
+    user = json.dumps(
+        {
+            "scene": scene,
+            "persona": persona,
+            "related_characters": related_characters,
+            "worldrule": worldrule,
+            "inspiration": inspiration,
+        },
+        ensure_ascii=False,
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
