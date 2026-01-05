@@ -39,11 +39,11 @@ class Settings:
     debug_trace_chat: bool = _get_env_bool("DEBUG_TRACE_CHAT", "true")
     enable_vector_retrieval: bool = _get_env_bool("ENABLE_VECTOR_RETRIEVAL", "true")
     llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "0"))  # 0/负数表示不限制
-    scene_count: int = int(os.getenv("SCENE_COUNT", "8"))
+    scene_count: int = int(os.getenv("SCENE_COUNT", "20"))
     model_prices_json: str = os.getenv("MODEL_PRICES_JSON", "")
 
     neo4j_uri: str = os.getenv("NEO4J_URI", "")
-    neo4j_username: str = os.getenv("NEO4J_USERNAME", "")
+    neo4j_username: str = os.getenv("NEO4J_USERNAME", "") or os.getenv("NEO4J_USER", "")
     neo4j_password: str = os.getenv("NEO4J_PASSWORD", "")
     neo4j_db: str = os.getenv("NEO4J_DB", "neo4j")
 
@@ -74,6 +74,14 @@ class Settings:
     fast_prefix_chars_default: int = int(os.getenv("FAST_PREFIX_CHARS", "240"))
     stream_chunk_chars_default: int = int(os.getenv("STREAM_CHUNK_CHARS", "24"))
     stream_flush_ms_default: int = int(os.getenv("STREAM_FLUSH_MS", "100"))
+    stream_delay_period_seconds: float = float(os.getenv("STREAM_DELAY_PERIOD_SECONDS", "0"))
+    stream_delay_comma_seconds: float = float(os.getenv("STREAM_DELAY_COMMA_SECONDS", "0"))
+    qwen_visible_devices: str = os.getenv("QWEN_VISIBLE_DEVICES", "0,1")
+    llm_temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+    llm_top_p: float = float(os.getenv("LLM_TOP_P", "0.9"))
+    llm_max_tokens_dialog: int = int(os.getenv("LLM_MAX_TOKENS_DIALOG", "1024"))
+    llm_max_tokens_persona: int = int(os.getenv("LLM_MAX_TOKENS_PERSONA", "4096"))
+    llm_stream_default: bool = _get_env_bool("LLM_STREAM_DEFAULT", "false")
 
     @property
     def neo4j_available(self) -> bool:

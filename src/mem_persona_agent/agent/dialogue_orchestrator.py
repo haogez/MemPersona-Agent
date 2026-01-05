@@ -74,9 +74,7 @@ def _summarize_nodes(nodes: List[Dict[str, Any]], limit: int = 10) -> List[Dict[
                 "id": node.get("id"),
                 "type": node.get("type") or node.get("node_type"),
                 "name": _truncate_text(str(node.get("name") or node.get("speaker") or ""), max_len=80),
-                "text": _truncate_text(
-                    str(node.get("text") or node.get("utterance") or node.get("summary") or ""), max_len=80
-                ),
+                "text": _truncate_text(str(node.get("text") or node.get("utterance") or node.get("summary") or ""), max_len=80),
             }
         )
     return summaries
@@ -129,13 +127,17 @@ def _build_detail_context_text(detail_pack: Dict[str, Any]) -> str:
     lines.append("[/DETAIL MEMORY]")
     return chr(10).join(lines)
 
+
+def _scene_summary_text(scene: Dict[str, Any]) -> str:
+    return str(scene.get("scene_gist") or scene.get("summary_7whr") or scene.get("summary") or "")
+
 def _stream_delay_seconds(token: str) -> float:
     if not token:
         return 0.0
     if any(mark in token for mark in ("。", ".")):
-        return 1.0
+        return settings.stream_delay_period_seconds
     if any(mark in token for mark in ("，", ",")):
-        return 0.5
+        return settings.stream_delay_comma_seconds
     return 0.0
 
 
@@ -265,8 +267,13 @@ class DialogueOrchestrator:
         self.retriever = retriever
         self.turn_manager = turn_manager or TurnIDManager()
         self.stage_b_timeout = stage_b_timeout
+        self._last_scene_memory: Dict[str, Dict[str, Any]] = {}
+        self._last_context_pack: Dict[str, Dict[str, Any]] = {}
+        self._last_scene_memory: Dict[str, Dict[str, Any]] = {}
 
     async def run_chat_stream(self, body: Any, history: List[Dict[str, Any]]) -> AsyncGenerator[str, None]:
+        history = history[-10:]  # keep最近5轮对话（user+assistant）
+        history = self._truncate_history(history)
         request_id = str(uuid.uuid4())
         queue: asyncio.Queue[SSEEvent] = asyncio.Queue()
         stage_a_done = asyncio.Event()
@@ -344,38 +351,159 @@ class DialogueOrchestrator:
         stage_a_decision: Dict[str, Any] = {}
         stage_a_selected_scene: Optional[Dict[str, Any]] = None
         stage_a_scene_context: Optional[str] = None
+        stage_b_prompt: List[Dict[str, Any]] = []
+        open_slots_ctx: List[str] = []
+        topic_continued = False
         if body.inject_memory:
-            stage_a_candidates, stage_a_retrieve_meta = await self.retriever.retrieve_scene_candidates(
-                body.character_id,
-                user_input,
-                place=body.place,
-                npc=body.npc,
-                limit=body.memory_top_k,
-                vector_enabled=False,
-                debug=True,
-                cache_only=True,
+            last_scene = self._last_scene_memory.get(body.character_id)
+            topic_shift = self._topic_shift(history, user_input, last_scene)
+            reuse_allowed = bool(
+                last_scene
+                and not topic_shift
+                and last_scene.get("score", 0.0) >= 0.35
+                and last_scene.get("reuse_count", 0) < 3
             )
-            stage_a_decision = should_recall_scene(user_input, stage_a_candidates)
-            if stage_a_decision.get("recall") and stage_a_candidates:
-                stage_a_selected_scene = stage_a_candidates[0].get("scene")
+            if reuse_allowed:
+                stage_a_selected_scene = last_scene.get("scene")
                 stage_a_scene_context = compile_scene_context(stage_a_selected_scene)
-                scene_gist = str(
-                    stage_a_selected_scene.get("scene_gist")
-                    or stage_a_selected_scene.get("summary_7whr")
-                    or ""
-                )
-                anchors = stage_a_selected_scene.get("anchors") or stage_a_selected_scene.get("keywords") or []
-                participants = stage_a_selected_scene.get("participants") or stage_a_selected_scene.get("who") or []
-                thread_a_meta.update(
+                stage_a_candidates = [
                     {
-                        "used_scene_memory": True,
-                        "scene_id": stage_a_selected_scene.get("scene_id"),
-                        "scene_source": "thread_b_selected",
-                        "scene_gist_chars": len(scene_gist),
-                        "anchors_count": len(anchors) if isinstance(anchors, list) else 0,
-                        "participants_count": len(participants) if isinstance(participants, list) else 0,
+                        "scene": stage_a_selected_scene,
+                        "scene_id": last_scene.get("scene_id"),
+                        "score": last_scene.get("score", 1.0),
+                        "keyword_score": last_scene.get("score", 1.0),
                     }
+                ]
+                stage_a_decision = {
+                    "recall": True,
+                    "reason": "topic_continued",
+                    "top_score": last_scene.get("score", 1.0),
+                    "gate_trace": [],
+                }
+                # Lightweight check for better scene
+                light_candidates, _ = await self.retriever.retrieve_scene_candidates(
+                    body.character_id,
+                    user_input,
+                    place=body.place,
+                    npc=body.npc,
+                    limit=min(3, body.memory_top_k),
+                    vector_enabled=False,
+                    debug=False,
+                    cache_only=False,
                 )
+                best = light_candidates[0] if light_candidates else None
+                if best:
+                    best_score = best.get("score", 0.0)
+                    best_scene = best.get("scene") or {}
+                    tokens = set(self._tokenize_simple(user_input))
+                    has_entity_hit = self._has_entity_hit(best_scene, tokens)
+                    if best_score >= last_scene.get("score", 0.0) + 0.15 or has_entity_hit:
+                        stage_a_selected_scene = best_scene
+                        stage_a_scene_context = compile_scene_context(stage_a_selected_scene)
+                        stage_a_candidates = light_candidates
+                        stage_a_decision = {
+                            "recall": True,
+                            "reason": "light_retrieval",
+                            "top_score": best_score,
+                            "gate_trace": [],
+                        }
+                        self._last_scene_memory[body.character_id] = {
+                            "scene": stage_a_selected_scene,
+                            "scene_id": stage_a_selected_scene.get("scene_id") if stage_a_selected_scene else None,
+                            "score": best_score,
+                            "reuse_count": 0,
+                        }
+                    else:
+                        # keep reuse, increment reuse count
+                        self._last_scene_memory[body.character_id]["reuse_count"] = last_scene.get("reuse_count", 0) + 1
+                else:
+                    self._last_scene_memory[body.character_id]["reuse_count"] = last_scene.get("reuse_count", 0) + 1
+            else:
+                stage_a_candidates, stage_a_retrieve_meta = await self.retriever.retrieve_scene_candidates(
+                    body.character_id,
+                    user_input,
+                    place=body.place,
+                    npc=body.npc,
+                    limit=max(body.memory_top_k, 10),
+                    vector_enabled=False,
+                    debug=True,
+                    cache_only=False,
+                )
+                top_scene = stage_a_candidates[0].get("scene") if stage_a_candidates else {}
+                _log(
+                    "stage_a.scene_retrieval",
+                    {
+                        "request_id": request_id,
+                        "character_id": body.character_id,
+                        "user_input": _truncate_text(user_input, max_len=200),
+                        "place": body.place,
+                        "npc": body.npc,
+                        "candidate_count": len(stage_a_candidates),
+                        "top_scene_id": top_scene.get("scene_id"),
+                        "top_scene_score": stage_a_candidates[0].get("score") if stage_a_candidates else None,
+                        "top_scene_summary": _truncate_text(
+                            str(
+                                top_scene.get("scene_gist")
+                                or top_scene.get("summary_7whr")
+                                or top_scene.get("summary")
+                                or ""
+                            ),
+                            max_len=200,
+                        ),
+                        "meta": stage_a_retrieve_meta,
+                    },
+                )
+                if stage_a_candidates:
+                    stage_a_decision = {
+                        "recall": True,
+                        "reason": "keyword_match",
+                        "top_score": stage_a_candidates[0].get("score", 0.0),
+                        "gate_trace": [],
+                    }
+                    stage_a_selected_scene = stage_a_candidates[0].get("scene")
+                    similar_block = ""
+                    if len(stage_a_candidates) >= 2:
+                        top_score = stage_a_candidates[0].get("score", 0.0)
+                        second_score = stage_a_candidates[1].get("score", 0.0)
+                        if second_score >= top_score - 0.15:
+                            lines = []
+                            for idx, cand in enumerate(stage_a_candidates[:10], 1):
+                                scene = cand.get("scene") or {}
+                                lines.append(
+                                    f"{idx}. score={cand.get('score', 0):.2f} id={scene.get('scene_id')} summary={_scene_summary_text(scene)}"
+                                )
+                            similar_block = (
+                                "[SIMILAR SCENES]\n"
+                                "Top scores are close; multiple similar memories detected.\n"
+                                + "\n".join(lines)
+                                + "\n请根据你的性格、当前对话的地点、对方角色先澄清或追问，再选择最贴近的记忆继续回应。\n[/SIMILAR SCENES]"
+                            )
+                    stage_a_scene_context = compile_scene_context(stage_a_selected_scene)
+                    if similar_block:
+                        stage_a_scene_context = f"{stage_a_scene_context}\n{similar_block}"
+                    scene_gist = str(stage_a_selected_scene.get("scene_gist") or stage_a_selected_scene.get("summary_7whr") or "")
+                    anchors = stage_a_selected_scene.get("anchors") or stage_a_selected_scene.get("keywords") or []
+                    participants = stage_a_selected_scene.get("participants") or stage_a_selected_scene.get("who") or []
+                    thread_a_meta.update(
+                        {
+                            "used_scene_memory": True,
+                            "scene_id": stage_a_selected_scene.get("scene_id"),
+                            "scene_source": "thread_b_selected",
+                            "scene_gist_chars": len(scene_gist),
+                            "anchors_count": len(anchors) if isinstance(anchors, list) else 0,
+                            "participants_count": len(participants) if isinstance(participants, list) else 0,
+                        }
+                    )
+                    self._last_scene_memory[body.character_id] = {
+                        "scene": stage_a_selected_scene,
+                        "scene_id": stage_a_selected_scene.get("scene_id") if stage_a_selected_scene else None,
+                        "score": stage_a_candidates[0].get("score", 1.0),
+                        "reuse_count": 0,
+                    }
+                else:
+                    stage_a_decision = should_recall_scene(user_input, stage_a_candidates)
+                    self._last_scene_memory.pop(body.character_id, None)
+            topic_continued = bool(last_scene and not topic_shift)
 
         _log(
             "request",
@@ -651,7 +779,8 @@ class DialogueOrchestrator:
         async def task_b() -> None:
             started = time.perf_counter()
             context_pack: Optional[Dict[str, Any]] = None
-            need_recall = bool(body.inject_memory and _needs_deep_recall(user_input))
+            cached_ctx = self._last_context_pack.get(body.character_id)
+            need_recall = bool(body.inject_memory and (_needs_deep_recall(user_input) or cached_ctx is not None or topic_continued))
             thread_b_meta["should_deep_recall"] = bool(need_recall)
             if not body.inject_memory:
                 thread_b_meta["decision_reason"] = "inject_memory_false"
@@ -667,7 +796,12 @@ class DialogueOrchestrator:
                 return
             _log("task_b.start", {"request_id": request_id, "need_deep_recall": need_recall})
             try:
-                context_pack = await asyncio.wait_for(_deep_recall(), timeout=self.stage_b_timeout)
+                if topic_continued and cached_ctx:
+                    context_pack = cached_ctx
+                else:
+                    context_pack = await asyncio.wait_for(_deep_recall(), timeout=self.stage_b_timeout)
+                    if context_pack and (context_pack.get("detail_context") or context_pack.get("detail_pack")):
+                        self._last_context_pack[body.character_id] = context_pack
                 if context_pack:
                     vector_error = (context_pack.get("retrieval_meta") or {}).get("vector_error")
                     if vector_error and not errors["stage_b"]:
@@ -700,18 +834,20 @@ class DialogueOrchestrator:
                 except asyncio.TimeoutError:
                     pass
                 context_pack = await context_pack_future
+                if not context_pack:
+                    context_pack = self._last_context_pack.get(body.character_id)
                 detail_pack = (context_pack or {}).get("detail_pack") or {}
                 if context_pack and detail_pack:
+                    open_slots_ctx = context_pack.get("open_slots") or []
                     stage_a_text = _truncate_text("".join(stage_a_buffer), max_len=800) or ""
                     scene_context = context_pack.get("scene_context") or ""
-                    open_slots = context_pack.get("open_slots") or []
                     decision_prompt = _build_decision_prompt(
                         body.persona,
                         user_input,
                         stage_a_text,
                         scene_context,
                         detail_pack,
-                        open_slots,
+                        open_slots_ctx,
                     )
                     try:
                         decision_text = await decision_client.chat(
@@ -728,6 +864,8 @@ class DialogueOrchestrator:
                         _log("task_c.decision_error", {"request_id": request_id, "error": _truncate_text(str(exc))})
                 if not decision_payload:
                     decision_payload = _default_decision(detail_pack)
+                if context_pack and (context_pack.get("detail_context") or context_pack.get("detail_pack")):
+                    decision_payload["should_supplement_now"] = True
                 if decision_payload.get("should_interrupt_stage_a"):
                     if not stage_a_done.is_set():
                         transition_text = decision_payload.get("transition_text") or default_transition
@@ -863,6 +1001,24 @@ class DialogueOrchestrator:
                 _log("task_c.no_detail", {"request_id": request_id})
                 return
 
+            detail_context_len = len(detail_context or "")
+            detail_stats["detail_context_chars"] = detail_context_len
+            if self._is_conclusive_reply(reply_a, open_slots_ctx, detail_context_len):
+                decision["should_supplement"] = False
+                decision["gain_reason"] = "conclusive_reply"
+                thread_c_meta.update(
+                    {
+                        "supplement_plan": "none",
+                        "need_interrupt": False,
+                        "gain_reason": decision["gain_reason"],
+                        "gain_score": None,
+                        "used_detail_context": False,
+                        "compression": {"mode": "none", "ratio": None, "reason": None},
+                    }
+                )
+                _log("task_c.skip_conclusive", {"request_id": request_id})
+                return
+
             compression = decision.get("memory_compression") or {}
             limitations = decision.get("memory_limitations") or {}
             compression_level = str(compression.get("level") or "").lower()
@@ -876,8 +1032,6 @@ class DialogueOrchestrator:
                 limitation_note = f"[MEMORY LIMITATIONS]\nreasons: {reason_text}\n[/MEMORY LIMITATIONS]"
                 detail_context = f"{limitation_note}\n{detail_context}"
 
-            detail_context_len = len(detail_context or "")
-            detail_stats["detail_context_chars"] = detail_context_len
             gain_score = None
             if detail_context_len > 0:
                 gain_score = round(min(1.0, detail_context_len / 400.0), 3)
@@ -926,6 +1080,7 @@ class DialogueOrchestrator:
                 build_user_message(user_input),
                 {"role": "assistant", "content": reply_a},
             ]
+            stage_b_prompt[:] = messages_b
             _log(
                 "stage_b.prompt",
                 {
@@ -974,24 +1129,42 @@ class DialogueOrchestrator:
 
         try:
             tasks = {task_a_handle, task_c_handle, queue_task}
+            stage_a_header_sent = False
+            stage_b_header_sent = False
             while True:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 if queue_task in done:
                     event = queue_task.result()
-                    if event.event in {"delta", "supplement"}:
+                    if event.event == "delta":
+                        if not stage_a_header_sent:
+                            yield "event: stage_a\n\n"
+                            stage_a_header_sent = True
+                        yield event.data
+                    elif event.event == "supplement":
+                        if not stage_b_header_sent:
+                            yield "event: stage_b\n\n"
+                            stage_b_header_sent = True
                         yield event.data
                     else:
-                        yield f"\n\nevent: {event.event}\ndata: {event.data}\n\n"
+                        yield f"event: {event.event}\ndata: {event.data}\n\n"
                     queue_task = asyncio.create_task(queue.get())
                     tasks = {task_a_handle, task_c_handle, queue_task}
                     continue
                 if task_a_handle.done() and task_c_handle.done():
                     while not queue.empty():
                         event = queue.get_nowait()
-                        if event.event in {"delta", "supplement"}:
+                        if event.event == "delta":
+                            if not stage_a_header_sent:
+                                yield "event: stage_a\n\n"
+                                stage_a_header_sent = True
+                            yield event.data
+                        elif event.event == "supplement":
+                            if not stage_b_header_sent:
+                                yield "event: stage_b\n\n"
+                                stage_b_header_sent = True
                             yield event.data
                         else:
-                            yield f"\n\nevent: {event.event}\ndata: {event.data}\n\n"
+                            yield f"event: {event.event}\ndata: {event.data}\n\n"
                     break
             meta = {
                 "timing": {
@@ -1004,6 +1177,8 @@ class DialogueOrchestrator:
                 "thread_b": thread_b_meta,
                 "detail_stats": detail_stats,
                 "thread_c": thread_c_meta,
+                "stage_a_prompt": messages_a,
+                "stage_b_prompt": stage_b_prompt,
             }
             _log(
                 "meta",
@@ -1016,7 +1191,7 @@ class DialogueOrchestrator:
                     "thread_c": thread_c_meta,
                 },
             )
-            yield f"\n\n\nevent: meta\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
+            yield f"event: meta\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
             yield "event: end\ndata: [DONE]\n\n"
         finally:
             for handle in (task_b_handle, task_c_handle):
@@ -1049,3 +1224,87 @@ class DialogueOrchestrator:
                 except asyncio.CancelledError:
                     pass
 
+    def _topic_shift(
+        self,
+        history: List[Dict[str, Any]],
+        user_input: str,
+        last_scene: Optional[Dict[str, Any]],
+        overlap_threshold: float = 0.2,
+    ) -> bool:
+        if self._is_followup(user_input):
+            return False
+        if not last_scene or not last_scene.get("scene"):
+            return True
+        new_tokens = set(self._tokenize_simple(user_input))
+        recent_text = " ".join([m.get("content") or "" for m in history[-10:]])
+        base_tokens = set(self._tokenize_simple(recent_text))
+        scene = last_scene.get("scene") or {}
+        scene_text = " ".join(
+            [
+                str(scene.get("scene_gist") or scene.get("summary_7whr") or ""),
+                " ".join(scene.get("anchors") or []),
+                " ".join(scene.get("keywords") or []),
+                " ".join(scene.get("participants") or scene.get("who") or []),
+                str((scene.get("place") or {}).get("name") or ""),
+            ]
+        )
+        base_tokens |= set(self._tokenize_simple(scene_text))
+        if not new_tokens or not base_tokens:
+            return True
+        overlap = len(new_tokens & base_tokens)
+        return overlap / max(len(new_tokens), 1) < overlap_threshold
+
+    def _tokenize_simple(self, text: str) -> List[str]:
+        if not text:
+            return []
+        return re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", text.lower())
+
+    def _is_followup(self, user_input: str) -> bool:
+        text = (user_input or "").strip()
+        if len(text) <= 12:
+            return True
+        keywords = ["然后呢", "还有吗", "就这些吗", "不止吧", "后来", "怎么", "为什么", "具体点", "再说说", "再讲讲"]
+        return any(k in text for k in keywords)
+
+    def _has_entity_hit(self, scene: Dict[str, Any], tokens: set[str]) -> bool:
+        if not scene or not tokens:
+            return False
+        fields = []
+        fields.append(scene.get("scene_gist") or scene.get("summary_7whr") or "")
+        fields.extend(scene.get("anchors") or [])
+        fields.extend(scene.get("keywords") or [])
+        fields.extend(scene.get("participants") or scene.get("who") or [])
+        place = scene.get("place") or {}
+        fields.append(place.get("name") or "")
+        scene_tokens = set()
+        for val in fields:
+            scene_tokens |= set(self._tokenize_simple(str(val)))
+        return bool(tokens & scene_tokens)
+
+    def _is_conclusive_reply(self, reply: str, open_slots: List[str], detail_context_len: int) -> bool:
+        if not reply or open_slots:
+            return False
+        text = reply.strip()
+        if len(text) >= 120:
+            return True
+        enders = ("。", ".", "！", "!", "吧", "啦", "呢", "嘛", "喽", "哦")
+        if len(text) >= 80 and text.endswith(enders):
+            return True
+        if len(text) >= 60 and detail_context_len <= 600 and text.endswith(enders):
+            return True
+        return False
+
+    def _truncate_history(self, history: List[Dict[str, Any]], per_msg: int = 250, total_chars: int = 2500) -> List[Dict[str, Any]]:
+        limited = history[-10:]
+        truncated: List[Dict[str, Any]] = []
+        total = 0
+        for msg in limited:
+            content = str(msg.get("content") or "")
+            if len(content) > per_msg:
+                content = content[:per_msg]
+            total += len(content)
+            truncated.append({**msg, "content": content})
+        while total > total_chars and truncated:
+            removed = truncated.pop(0)
+            total -= len(removed.get("content") or "")
+        return truncated

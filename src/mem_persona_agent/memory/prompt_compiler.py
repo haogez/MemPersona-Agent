@@ -6,21 +6,16 @@ from typing import Any, Dict, List
 def compile_scene_context(scene: Dict[str, Any]) -> str:
     if not scene:
         return ""
-    place = scene.get("place") or {}
-    self_state = scene.get("self_state") or {}
-    salience = scene.get("salience") or {}
+    summary = (
+        scene.get("scene_gist")
+        or scene.get("summary_7whr")
+        or scene.get("summary")
+        or ""
+    )
     lines = [
         "[SCENE MEMORY | internal]",
         f"scene_id: {scene.get('scene_id')}",
-        f"life_stage: {scene.get('life_stage')} | time_range: {scene.get('time_range')}",
-        f"place: {place.get('name')} ({place.get('type')})",
-        f"participants: {', '.join(scene.get('participants') or [])}",
-        f"scene_gist: {scene.get('scene_gist')}",
-        f"self_state: physical={self_state.get('physical')}; mental={self_state.get('mental')}",
-        f"emotion: {', '.join(scene.get('emotion') or [])}",
-        "salience: "
-        f"importance={salience.get('importance')}; emotional_intensity={salience.get('emotional_intensity')}; recall_probability={salience.get('recall_probability')}",
-        f"anchors: {', '.join(scene.get('anchors') or [])}",
+        f"summary: {summary}",
         "[/SCENE MEMORY]",
     ]
     return "\n".join([l for l in lines if l])
@@ -62,4 +57,3 @@ def compile_detail_context(nodes: List[Dict[str, Any]], max_items: int = 10) -> 
                 lines.append(f"- Object: {name}")
     lines.append("[/DETAIL MEMORY]")
     return "\n".join(lines)
-

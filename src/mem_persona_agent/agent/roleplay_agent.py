@@ -77,12 +77,14 @@ class RoleplayAgent:
             npc=npc,
             limit=8,
         )
-        decision = should_recall_scene(user_input, candidates)
-        selected_scene = None
-        scene_context = None
-        if decision.get("recall") and candidates:
+        if candidates:
+            decision = {"recall": True, "reason": "keyword_match", "top_score": candidates[0].get("score", 0.0)}
             selected_scene = candidates[0].get("scene")
             scene_context = compile_scene_context(selected_scene)
+        else:
+            decision = should_recall_scene(user_input, candidates)
+            selected_scene = None
+            scene_context = None
 
         system_prompt_a = build_stage_a_system_prompt(self.persona, place, npc, scene_context, facts_allowed=False)
         user_message = build_user_message(user_input)
@@ -149,4 +151,3 @@ class RoleplayAgent:
                 continue
             self.last_streamed_reply += token
             yield token
-

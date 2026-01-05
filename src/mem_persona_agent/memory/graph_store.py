@@ -3,15 +3,38 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from neo4j import GraphDatabase, Driver
+from neo4j import Driver, GraphDatabase
 
 from mem_persona_agent.config import settings
 
 logger = logging.getLogger(__name__)
+_driver_lock = threading.Lock()
+_shared_driver: Driver | None = None
+
+
+def _get_shared_driver() -> Driver | None:
+    global _shared_driver
+    if _shared_driver:
+        return _shared_driver
+    if not settings.neo4j_available:
+        return None
+    with _driver_lock:
+        if _shared_driver:
+            return _shared_driver
+        try:
+            _shared_driver = GraphDatabase.driver(
+                settings.neo4j_uri,
+                auth=(settings.neo4j_username, settings.neo4j_password),
+            )
+        except Exception as exc:  # pragma: no cover - safety
+            logger.warning("Neo4j connection failed, using in-memory store: %s", exc)
+            _shared_driver = None
+    return _shared_driver
 
 
 def _read_records(path: Path) -> List[Dict[str, Any]]:
@@ -110,15 +133,7 @@ class GraphStore:
     _keyword_index_loaded: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
-        if settings.neo4j_available:
-            try:
-                self.driver = GraphDatabase.driver(
-                    settings.neo4j_uri,
-                    auth=(settings.neo4j_username, settings.neo4j_password),
-                )
-            except Exception as exc:  # pragma: no cover - safety
-                logger.warning("Neo4j connection failed, using in-memory store: %s", exc)
-                self.driver = None
+        self.driver = _get_shared_driver()
         try:
             self._load_keyword_index()
             self._load_scene_cache()

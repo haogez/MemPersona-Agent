@@ -36,13 +36,19 @@ def build_stage_a_system_prompt(
     base = build_base_system_prompt(persona, place, npc)
     instructions = (
         "[Stage A Instructions]\n"
-        "Use ONLY SceneMemory if provided. Respond instinctively and emotionally, with situational tone."
+        "Use ONLY the SceneMemory summary if provided. Respond instinctively and emotionally, with situational tone."
         " Avoid detailed facts or long explanations. Keep it short and natural."
-        " If no scene memory, answer from persona and present context."
+        " Do NOT quote who-said-what or detailed memories here; persona is only for tone/style, not for factual recall."
+        " The primary source is SceneMemory; if no summary is available, do NOT fabricate events or memories; answer only from persona style and present context."
+        " User's current message is top priority: fully immerse in the scene, respond appropriately to the user's role, place, and tone."
+        " Avoid filler lines that don't move the conversation; keep replies purposeful and situational."
+        " STRICT: do NOT说“某人说/告诉我/提到”等转述对话，不要出现任何引用他人话语的句子。"
     )
     if facts_allowed:
         instructions += " If facts_allowed, you may add 1-2 grounded factual details if memory context is available."
-    memory_block = scene_context or "[SCENE MEMORY | internal]\nnone\n[/SCENE MEMORY]"
+    memory_block = scene_context or (
+        "[SCENE MEMORY | internal]\nnone\n[/SCENE MEMORY]\n[NO SCENE MEMORY] 不要编造记忆或具体事件，只按人物设定作答。"
+    )
     return {"role": "system", "content": f"{base}\n\n{memory_block}\n\n{instructions}"}
 
 
@@ -80,4 +86,3 @@ def build_stage_b_system_prompt(
 
 def build_user_message(text: str) -> Dict[str, str]:
     return {"role": "user", "content": text}
-

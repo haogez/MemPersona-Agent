@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from mem_persona_agent.config import settings
 from mem_persona_agent.llm import ChatClient
 from mem_persona_agent.llm.prompts import (
     build_detail_pack_prompt,
@@ -19,7 +20,7 @@ from mem_persona_agent.utils import StatsCollector
 
 logger = logging.getLogger(__name__)
 
-SCENE_PACK_SIZE = 6
+SCENE_PACK_SIZE = settings.scene_count
 
 
 def _now_iso() -> str:
@@ -536,4 +537,3 @@ class MemoryWriter:
             "events": events,
             "causal_edges": causal_edges,
         }
-

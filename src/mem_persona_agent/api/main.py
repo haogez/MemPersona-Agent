@@ -280,7 +280,8 @@ async def chat(body: ChatRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "neo4j": store.driver is not None, "neo4j_available": settings.neo4j_available}
+    connected = store.driver is not None
+    return {"status": "ok", "neo4j": connected, "neo4j_available": connected}
 
 
 @app.get("/debug/jsonl/stats")
@@ -333,4 +334,3 @@ def _decode_json_with_fallback(raw: bytes, encodings: tuple[str, ...] = ("utf-8"
         except Exception as exc:
             last_error = exc
     raise HTTPException(status_code=400, detail=f"Cannot decode payload; tried {encodings}; last_error={last_error}")
-
