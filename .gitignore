@@ -5,3 +5,18 @@ venv/
 env/
 .env
 src/artifacts/*.jsonl
+
+
+# datasets / cache / locks
+test/data/time_lite/
+**/*.lock
+**/*.arrow
+**/*.incomplete_info.lock
+
+# outputs
+test/outputs/
+test/data/processed/
+
+# local junk
+src/=2
+serve_qwen.py

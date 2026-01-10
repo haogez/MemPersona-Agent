@@ -7,3 +7,5 @@ httpx
 anyio
 tenacity
 numpy
+datasets
+tqdm
