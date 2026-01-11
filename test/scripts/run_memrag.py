@@ -11,11 +11,18 @@ from concurrent.futures import ThreadPoolExecutor
 from neo4j import GraphDatabase
 from tqdm import tqdm
 
+from .eval_utils import (
+    build_output_paths,
+    configure_llm_env,
+    model_tag_from_card,
+    set_seed,
+)
+from .task_accuracy import compute_accuracy
 from .utils import (
-    OUTPUT_DIR,
     call_vllm,
     ensure_dirs,
     judge_equiv,
+    load_jsonl,
     load_timelite,
     normalize_answer,
     pick_fields,
@@ -378,29 +385,34 @@ def build_prompt(
 # ----------------------------
 def main(argv: List[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Graph-RAG eval on TIME-Lite")
+    parser.add_argument("--dataset", type=str, default="time_lite")
     parser.add_argument("--split", type=str, default=None)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--max_samples", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--model_card", type=str, default=None)
+    parser.add_argument("--base_url", type=str, default=None)
+    parser.add_argument("--api_key", type=str, default=None)
+    parser.add_argument("--out_dir", type=str, default=None)
     parser.add_argument("--k", type=int, default=3, help="top-k events")
     parser.add_argument("--neighbor", type=int, default=0, help="neighbor hop depth along causal paths")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args(argv)
 
+    configure_llm_env(args.model_card, args.base_url, args.api_key)
+    set_seed(args.seed)
     ensure_dirs()
     data = load_timelite(args.split)
-    if args.limit:
-        data = data.select(range(args.limit))
+    limit = args.max_samples or args.limit
+    if limit:
+        data = data.select(range(limit))
     q_key, a_key, c_key = pick_fields(data[0])
 
-    pred_path = OUTPUT_DIR / "predictions" / "memrag.jsonl"
-    done: Dict[str, Dict[str, Any]] = {}
-    if args.resume and pred_path.exists():
-        for line in pred_path.open("r", encoding="utf-8"):
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            done[str(rec.get("id"))] = rec
+    model_tag = model_tag_from_card(args.model_card)
+    pred_path, metrics_path = build_output_paths("memrag", model_tag, args.split, args.out_dir)
+    done: Dict[str, Dict[str, Any]] = load_jsonl(pred_path) if args.resume else {}
 
+    pred_path.parent.mkdir(parents=True, exist_ok=True)
     out_f = pred_path.open("w", encoding="utf-8")
 
     uri = os.getenv("NEO4J_URI")
@@ -513,6 +525,7 @@ def main(argv: List[str] | None = None) -> None:
         # ✅ 评测/落盘：先整段删 think，再抽 FINAL
         pred_no_think = remove_think_blocks(pred_raw)
         pred_clean = extract_final_answer(question, pred_no_think, max_chars=650)
+        pred_norm = normalize_answer(pred_clean)
 
 
         gold_val = sample[a_key] if isinstance(sample, dict) else ""
@@ -525,9 +538,16 @@ def main(argv: List[str] | None = None) -> None:
             "pred": pred_clean,            # 用于 judge/metrics 的最终答案
             "pred_raw": pred_raw,          # 原始输出（可能包含<think>）
             "pred_no_think": pred_no_think,  # 删除 think 后文本（用于 debug）
+            "pred_norm": pred_norm,
             "gold": gold_val,
             "correct": is_correct,
             "timeline_used": [ev.get("event_id") for ev in timeline],
+            "extra": {
+                "neighbor": args.neighbor,
+                "k": args.k,
+                "scene_summary_len": len(scene_summary or ""),
+                "anchor_event_id": anchor_event_id,
+            },
         }
 
         out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -537,8 +557,7 @@ def main(argv: List[str] | None = None) -> None:
 
     out_f.close()
 
-    acc = correct / total if total else 0.0
-    metrics_path = OUTPUT_DIR / "metrics" / "memrag.json"
+    acc = compute_accuracy(all_recs)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.write_text(
         json.dumps({"accuracy": acc, "total": total, "samples": all_recs}, ensure_ascii=False, indent=2),

@@ -3,14 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 from collections import defaultdict
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, List
+
+import os
+import re
 
 from .utils import load_timelite, pick_fields
 
 METRIC_FILES = {
     "closedbook": "test/outputs/metrics/closedbook.json",
     "fullcontext": "test/outputs/metrics/fullcontext.json",
-    "graphrag": "test/outputs/metrics/graphrag.json",
+    "memrag": "test/outputs/metrics/memrag.json",
 }
 
 # TIME-Lite 固定任务集合（按论文定义顺序）
@@ -47,9 +51,30 @@ def load_metrics(path: str) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def compute_accuracy(records: List[Dict[str, Any]]) -> float:
+    if not records:
+        return 0.0
+    hits = sum(1 for rec in records if rec.get("correct"))
+    return hits / len(records)
+
+
+def model_tag_from_env() -> str:
+    raw = (os.getenv("LLM_MODEL_NAME") or "model").strip()
+    tag = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_").lower()
+    return tag or "model"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compute per-task accuracy for existing metrics files.")
     parser.add_argument("--split", type=str, default=None, help="dataset split")
+    parser.add_argument(
+        "--methods",
+        type=str,
+        default=None,
+        help="comma-separated method names (use new naming rule if provided)",
+    )
+    parser.add_argument("--model_tag", type=str, default=None, help="model tag for new naming rule")
+    parser.add_argument("--metrics", type=str, default=None, help="comma-separated metrics file paths")
     args = parser.parse_args()
 
     dataset = load_timelite(args.split)
@@ -68,7 +93,27 @@ def main() -> None:
         id2task[sid] = task_val
         idx2task[idx] = task_val
 
-    metric_data = {name: load_metrics(path) for name, path in METRIC_FILES.items()}
+    metric_sources: Dict[str, str] = dict(METRIC_FILES)
+    if args.metrics:
+        metric_sources = {
+            Path(path).stem: path for path in [p.strip() for p in args.metrics.split(",") if p.strip()]
+        }
+    elif args.methods:
+        model_tag = args.model_tag or model_tag_from_env()
+        methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+        metric_sources = {
+            method: f"test/outputs/metrics/{method}_{model_tag}_{args.split or 'default'}.json"
+            for method in methods
+        }
+    else:
+        if not any(Path(path).exists() for path in metric_sources.values()):
+            model_tag = args.model_tag or model_tag_from_env()
+            metric_sources = {
+                method: f"test/outputs/metrics/{method}_{model_tag}_{args.split or 'default'}.json"
+                for method in metric_sources.keys()
+            }
+
+    metric_data = {name: load_metrics(path) for name, path in metric_sources.items()}
 
     # 聚合所有 task
     all_tasks = set(TASK_ORDER)
@@ -91,7 +136,7 @@ def main() -> None:
         all_tasks.update(task_total.keys())
 
     # 打印对比表：每行一个 task，每列一个 metric，显示 acc 和 hits/total
-    metric_names = list(METRIC_FILES.keys())
+    metric_names = list(metric_sources.keys())
     header = ["task"] + [f"{m}_acc" for m in metric_names] + [f"{m}_h/t" for m in metric_names]
 
     rows = []

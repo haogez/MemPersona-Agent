@@ -30,7 +30,7 @@ test/
     download_timelite.py
     build_graph.py
     run_closedbook.py
-    run_graphrag.py
+    run_memrag.py
     run_all.py
 ```
 
@@ -44,18 +44,36 @@ python -m test.scripts.download_timelite
 python -m test.scripts.build_graph --wipe
 
 # 仅闭卷
-python -m test.scripts.run_closedbook --limit 200
+python -m test.scripts.run_closedbook --limit 200 --model_card qwen3-14b --base_url http://127.0.0.1:18000/v1
 
-# 仅 Graph-RAG
-python -m test.scripts.run_graphrag --k 3 --neighbor 2 --limit 200
+# 仅 Full-context
+python -m test.scripts.fullcontext --limit 200 --model_card qwen3-14b --base_url http://127.0.0.1:18000/v1
+
+# 仅 Graph-RAG (MemRAG)
+python -m test.scripts.run_memrag --k 3 --neighbor 2 --limit 200 --model_card qwen3-14b --base_url http://127.0.0.1:18000/v1
+
+# Regular RAG
+python -m test.scripts.run_regular_rag --k 3 --limit 200 --model_card qwen3-14b --base_url http://127.0.0.1:18000/v1
+
+# GraphRAG-Local
+python -m test.scripts.run_graphrag_local --k 3 --neighbor 1 --limit 200 --model_card qwen3-14b --base_url http://127.0.0.1:18000/v1
+
+# GraphRAG-Global
+python -m test.scripts.run_graphrag_global --k 3 --limit 200 --model_card qwen3-14b --base_url http://127.0.0.1:18000/v1
+
+# HippoRAG2
+python -m test.scripts.run_hipporag2 --k 3 --path_k 8 --limit 200 --model_card qwen3-14b --base_url http://127.0.0.1:18000/v1
+
+# CausalRAG (可选摘要 LLM)
+python -m test.scripts.run_causalrag --k 3 --steps 2 --limit 200 --model_card qwen3-14b --base_url http://127.0.0.1:18000/v1
 
 # 一键（构图+闭卷+Graph-RAG）
-python -m test.scripts.run_all --mode all --limit 200
+python -m test.scripts.run_all --mode all --limit 200 --model_card qwen3-14b --base_url http://127.0.0.1:18000/v1
 ```
 
 ## 输出
-- 预测：`test/outputs/predictions/closedbook.jsonl` / `graphrag.jsonl`
-- 指标：`test/outputs/metrics/closedbook.json` / `graphrag.json` / `summary.json`
+- 预测：`test/outputs/predictions/<method>_<model_tag>_<split>.jsonl`
+- 指标：`test/outputs/metrics/<method>_<model_tag>_<split>.json`
 
 ## 参数
 - `--limit N`：只跑前 N 条
